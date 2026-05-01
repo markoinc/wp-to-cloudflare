@@ -37,34 +37,50 @@ def slugify(url: str) -> str:
     return re.sub(r"[^a-z0-9]", "-", domain.lower()).strip("-")
 
 
-def mirror_site(url: str, out_dir: Path) -> bool:
+def mirror_site(url: str, out_dir: Path, allow_insecure: bool = False) -> bool:
     raw_dir = out_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
+    base_cmd = [
         "wget",
         "--mirror",
         "--convert-links",
         "--adjust-extension",
         "--page-requisites",
         "--no-parent",
-        "--no-check-certificate",
         "--timeout=15",
         "--tries=2",
         "--wait=1",
         "--random-wait",
         "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         "-P", str(raw_dir),
-        url
     ]
 
     print(f"Mirroring {url} → {raw_dir}")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    
+    # First attempt: with TLS verification on. Mirrored HTML/JS is the raw
+    # material for a rebuild — if any of it ever gets re-served, we don't want
+    # to be shipping JS that was MITM'd in transit. Only fall back to
+    # --no-check-certificate when the user explicitly opts in via --insecure
+    # (e.g. an expired-cert prospect site they trust).
+    result = subprocess.run(base_cmd + [url], capture_output=True, text=True, timeout=300)
+
+    # wget exit 5 = SSL verification failure
+    if result.returncode == 5 and allow_insecure:
+        print("  TLS verification failed — retrying with --no-check-certificate (--insecure flag set)")
+        result = subprocess.run(
+            base_cmd + ["--no-check-certificate", url],
+            capture_output=True, text=True, timeout=300,
+        )
+    elif result.returncode == 5:
+        print(
+            "  TLS verification failed. Re-run with --insecure to mirror anyway.\n"
+            "  (Mirrored JS from a MITM'd site can backdoor any rebuild that re-serves it.)"
+        )
+
     # wget exits 8 for server errors on some pages — still usable
     if result.returncode not in (0, 8):
         print(f"wget warning (exit {result.returncode}): {result.stderr[-300:]}")
-    
+
     html_files = list(raw_dir.rglob("*.html"))
     print(f"  Captured {len(html_files)} HTML files")
     return len(html_files) > 0
@@ -157,6 +173,12 @@ def main():
     parser.add_argument("url", help="Full URL to scrape (e.g. https://example.com)")
     parser.add_argument("--out", help="Output directory (default: ~/prospects/{slug})")
     parser.add_argument("--no-screenshot", action="store_true", help="Skip Playwright screenshots")
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Allow wget --no-check-certificate fallback if TLS verification fails. "
+             "Off by default — mirrored JS from a MITM'd connection can backdoor any rebuild.",
+    )
     args = parser.parse_args()
 
     url = args.url.rstrip("/")
@@ -170,7 +192,7 @@ def main():
     print(f"\n🕷️  Scraping: {url}")
     print(f"   Output:   {out_dir}\n")
     
-    ok = mirror_site(url, out_dir)
+    ok = mirror_site(url, out_dir, allow_insecure=args.insecure)
     if not ok:
         print("❌ Mirror failed — no HTML captured")
         sys.exit(1)

@@ -1,0 +1,15 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local credentials (just in case — these should never live in the repo)
+.env
+.env.*
+*.credentials.json
+.git_token_helper.sh

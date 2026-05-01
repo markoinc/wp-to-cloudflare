@@ -27,13 +27,21 @@ from pathlib import Path
 
 def run_lighthouse(url: str, out_dir: Path) -> dict | None:
     lh_path = out_dir / "pagespeed.json"
+    # Pin lighthouse to a known major version. Unpinned `npx lighthouse` pulls
+    # whatever the registry currently serves, which is one bad publish away
+    # from running attacker-controlled JS as your user every time the script
+    # runs.
+    lighthouse_pkg = "lighthouse@12"
     try:
         result = subprocess.run(
-            ["npx", "lighthouse", url,
+            ["npx", "--yes", "-p", lighthouse_pkg, "lighthouse", url,
              "--output=json", f"--output-path={lh_path}",
              "--form-factor=mobile", "--throttling-method=simulate",
              "--only-categories=performance",
-             "--chrome-flags=--headless --no-sandbox",
+             # Drop --no-sandbox: Chrome's sandbox is the main barrier between
+             # a malicious page in the audited URL and the host. Lighthouse
+             # works without it on macOS dev machines.
+             "--chrome-flags=--headless",
              "--quiet"],
             capture_output=True, text=True, timeout=120
         )

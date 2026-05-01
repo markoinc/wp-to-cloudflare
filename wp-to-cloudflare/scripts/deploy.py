@@ -18,8 +18,10 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -93,9 +95,6 @@ def push_to_github(static_dir, slug, token, org):
     create_github_repo(slug, token, org)
     remote_url = f"https://github.com/{org}/{slug}.git"
 
-    # Write a temporary credential helper script
-    helper_path = Path(static_dir) / ".git_token_helper.sh"
-
     git_dir = Path(static_dir) / ".git"
     if git_dir.exists():
         print("  Git repo exists — resetting remote")
@@ -108,21 +107,29 @@ def push_to_github(static_dir, slug, token, org):
     run(["git", "commit", "-m", "Initial static export", "--allow-empty"], cwd=static_dir)
     run(["git", "branch", "-M", "main"], cwd=static_dir)
 
-    # Use GIT_ASKPASS to supply token without embedding it in URL or .git/config
-    askpass_script = helper_path
-    askpass_script.write_text(f'#!/bin/sh\necho "{token}"\n')
-    askpass_script.chmod(0o700)
-
+    # Write the askpass helper to a tempfile *outside* the git tree (so a stray
+    # `git add` can never commit it) and create it 0o600 from the start. The
+    # token is shlex-quoted so a future token format with shell metacharacters
+    # can't break out of the echo. The `finally` block unlinks; if the process
+    # is SIGKILLed before that runs, the file is in the system temp dir and
+    # not reachable by other users (mode 0o600 + dir 0o700 on macOS/Linux).
+    fd, helper_path_str = tempfile.mkstemp(prefix="git-askpass-", suffix=".sh")
+    helper_path = Path(helper_path_str)
     try:
+        with os.fdopen(fd, "w") as f:
+            f.write(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(token)}\n")
+        helper_path.chmod(0o700)
+
         run(
             ["git", "push", "-u", "origin", "main"],
             cwd=static_dir,
-            env={"GIT_ASKPASS": str(askpass_script), "GIT_USERNAME": "x-token"}
+            env={"GIT_ASKPASS": str(helper_path), "GIT_USERNAME": "x-token"}
         )
     finally:
-        # Always clean up the credential helper
-        if askpass_script.exists():
-            askpass_script.unlink()
+        try:
+            helper_path.unlink()
+        except FileNotFoundError:
+            pass
 
     print(f"  Pushed to github.com/{org}/{slug}")
     return org
